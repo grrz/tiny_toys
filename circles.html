@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.15.1/dist/phaser-arcade-physics.min.js"></script>
+    <!-- script src="phaser.min.js"></script -->
+</head>
+<body>
+    <script>
+    var config = {
+        type: Phaser.AUTO,
+        width: 1400,
+        height: 700,
+        keyboard: true,
+        scene: { preload: preload, create: create, update: update }
+    };
+
+    var mgd = {
+        th: undefined, // phaser object %%% ugly code
+
+        //// puck data:
+        // x, y, r = coords + radius
+        // a, s = angle + speed
+        // h = health
+        pucks: [
+            // {x: config.width / 2, y: -1001, r: 1100, a: 0, s: 0, h: 3},
+/*            {x: 100, y: 300, r: 100, a: 0, s: 0, h: 3},
+            {x: 300, y: 300, r: 100, a: 0, s: 0, h: 3},
+            {x: 500, y: 300, r: 100, a: 0, s: 0, h: 3},
+            {x: 700, y: 300, r: 100, a: 0, s: 0, h: 3},
+            {x: 900, y: 300, r: 100, a: 0, s: 0, h: 3},
+            {x: 1100, y: 300, r: 100, a: 0, s: 0, h: 3}*/
+        ],
+
+        line: { // test line
+            x: config.width / 2,
+            y: config.height - 25, // / 2,
+            a: 22 / 180 * Math.PI - Math.PI / 2
+        },
+
+        state: "run", // autorun from start
+        statei: -1,
+        autorun: true,
+
+        emitter: null,
+
+        logg: undefined, // log component
+        logt: [] // log array
+    };
+    var game = {};
+
+    var gameOptions = {
+        maxpucks: 100,
+        puckhealth: [
+            0xFF0000, // dead, usually not used
+            0xFF7F00,
+            0xFFFF00,
+            0x00FF00  // new
+        ],
+    }
+
+    window.onload = function() {
+        game = new Phaser.Game(config);
+
+        window.focus()
+    }
+
+    function preload() {
+        mgd.th = this; // %%% ugly
+        this.load.image("crosshair", "crosshair.png");
+        //this.load.image('puff', 'http://labs.phaser.io/assets/sprites/jets.png');
+        this.load.image('puff', 'http://labs.phaser.io/assets/phaser3/star2.png');
+        this.load.image('blop', 'http://labs.phaser.io/assets/sprites/jets.png');
+    }
+
+    function create() {
+        this.graphics = this.add.graphics();
+        mgd.logg = this.add.text(0, 0, "", {
+            fontFamily: "Arial",
+            color: "#ffffff",
+            fontSize: 10
+        });
+
+        mgd.tween_fade = this.tweens.addCounter({ // fade
+            from: 1, to: 0,
+            duration: 200,
+            delay: 0,
+            ease: 'Power0',
+            repeat: 0,
+            yoyo: false,
+
+        });
+        mgd.tween_wave = this.tweens.addCounter({ // wave
+            from: 0, to: 0,
+            duration: 100,
+            delay: 0,
+            ease: 'Linear',
+            repeat: 1,
+            yoyo: false
+        });
+
+        mgd.circle = new Phaser.Geom.Circle();
+        mgd.puffs = this.add.group({ key: 'puff', repeat: 8 });
+        mgd.particles = this.add.particles('blop');
+        mgd.emitter = mgd.particles.createEmitter({
+            active: false,
+            speed: 100,
+            scale: { start: 1, end: 0 },
+            maxParticles: 200,
+            blendMode: 'ADD'
+        });
+
+        drawStuff();
+
+        this.input.keyboard.on("keydown", function(pointer) {
+            processkey(pointer);
+        }, this);
+
+    }
+
+    function processkey(key) {
+        if (key.code == "Space") {
+            if (mgd.state == "") {
+                mgd.pucks.push({
+                    x: mgd.line.x,
+                    y: mgd.line.y,
+                    r: Phaser.Math.Between(10, 25),
+                    s: Phaser.Math.Between(5, 20),
+                    a: Phaser.Math.Between(-180, 180) / 180 * Math.PI,
+                    //a: mgd.line.a + Math.PI / 2,
+                    h: 3
+                });
+                mgd.state = "puckrun";
+                //var p = mgd.pucks[mgd.pucks.length - 1]; logg("s: " + p.s + ", a: " + p.a / Math.PI * 180);
+                
+                if (mgd.pucks.length > gameOptions.maxpucks) { mgd.pucks.shift() }
+                drawStuff();
+            }
+        } else if (key.code == "ArrowLeft") {
+            mgd.line.a -= Math.PI / 180 / 2;
+            drawStuff();
+        } else if (key.code == "ArrowRight") {
+            mgd.line.a += Math.PI / 180 / 2;
+            drawStuff();
+        } else if (key.code == "Backspace") {
+            if (!mgd.autorun && mgd.pucks.length > 0) {
+                mgd.pucks.shift();
+                drawStuff();
+            }
+        } else if (key.code == "KeyR") {
+            mgd.autorun = !mgd.autorun;
+            if (mgd.state == "" && mgd.autorun) { mgd.state = "run" }
+        }
+
+//        logg("key: " + key.code);
+
+    }
+    
+    // all physics logic here
+    function update(dt) {
+        switch (mgd.state) { // %%% maybe better use Phazer's state machine?
+            case "": // do nothing
+            break;
+
+            case "puckrun":
+                var d = -1;
+                var coll = -1;
+
+                for (i = mgd.pucks.length - 1; i >= 0 ; i--) { if (mgd.pucks[i].h <= 0 && mgd.pucks[i].h > -10) { mgd.pucks.splice(i, 1); } }
+
+                for (var i = 0; i < mgd.pucks.length; i++) {
+                    if (mgd.pucks[i].s > 0) {
+                        var a = mgd.pucks[i].a; // doh %%%
+                        mgd.pucks[i].x += mgd.pucks[i].s * Math.sin(a);
+                        mgd.pucks[i].y -= mgd.pucks[i].s * Math.cos(a);
+                        if (!checkCollision_walls(i)) {
+                            coll = checkCollision_pucks(i);
+                            if (coll > -1) {
+                                mgd.pucks[coll].h--;
+
+                                if (mgd.pucks[coll].h > 0) {
+                                    // emit blue puffs
+
+                                    mgd.circle.setTo(mgd.pucks[coll].x, mgd.pucks[coll].y, mgd.pucks[coll].r);
+                                    //mgd.tween_wave.updateTweenData(mgd.tween_wave, { from: mgd.pucks[coll].r, to: mgd.pucks[coll].r * 0.8 });
+                                    mgd.tween_wave = this.tweens.addCounter({ // new wave
+                                        from: mgd.pucks[coll].r, to: mgd.pucks[coll].r * 0.8,
+                                        duration: 100, delay: 0,
+                                        ease: 'Linear', repeat: 1,
+                                        yoyo: false
+                                    });
+                                    mgd.tween_fade.restart();
+                                    //mgd.tween_wave.restart();
+
+                                } else {
+                                    // emit 
+
+                                    mgd.emitter.active = true;
+                                    mgd.emitter.setSpeed(mgd.pucks[coll].r);
+                                    mgd.emitter.explode(Math.round(mgd.pucks[coll].r / 3), mgd.pucks[coll].x, mgd.pucks[coll].y);
+                                    //mgd.emitter.y = mgd.pucks[coll].y;
+                                    //mgd.emitter.start(true, 4000, null, 10);
+
+                                }
+
+                                // doh %%% should fix this to get math-accurate bounce
+                                mgd.pucks[i].x -= mgd.pucks[i].s * Math.sin(a);
+                                mgd.pucks[i].y += mgd.pucks[i].s * Math.cos(a);
+                            }
+                        }
+                        mgd.pucks[i].s -= 0.1;
+                        d = i;
+                    }
+                }
+
+                if (d > -1) {
+                    drawStuff();
+                    if (mgd.pucks[d].s <= 0) {
+                        mgd.state = "puckinflate";
+                        mgd.statei = d;
+
+                        setGrowSize(d);
+                    }
+                } else { mgd.state = "" } // is it possible?
+            break;
+
+            case "puckinflate":
+                mgd.pucks[mgd.statei].r += mgd.pucks[mgd.statei].growSpeed;
+                if (mgd.pucks[mgd.statei].r >= mgd.pucks[mgd.statei].growTo) { mgd.state = mgd.autorun ? "run" : "" }
+                drawStuff();
+            break;
+
+            case "run": // emerge a new puck
+                mgd.pucks.push({ // %%% constants to be moved to game config
+                    x: mgd.line.x,
+                    y: mgd.line.y,
+                    r: Phaser.Math.Between(10, 25),
+                    s: Phaser.Math.Between(5, 20),
+                    a: Phaser.Math.Between(-80, 80) / 180 * Math.PI,
+                    h: 3
+                });
+                mgd.state = "puckrun";
+                
+                if (mgd.pucks.length > gameOptions.maxpucks) { mgd.pucks.shift() }
+                drawStuff();
+            break;
+        }
+
+    }
+    
+
+    //////////////////////////////////////////////////////////////////////
+    // calculating stuff
+
+    function checkCollision_walls(i) {
+        // %%% constants game.config.* to be moved to game walls config
+        var c = false;
+        if (mgd.pucks[i].x < mgd.pucks[i].r) { // left wall
+            mgd.pucks[i].x = mgd.pucks[i].r * 2 - mgd.pucks[i].x;
+            mgd.pucks[i].a = - mgd.pucks[i].a;
+            c = true;
+        } else if (mgd.pucks[i].x + mgd.pucks[i].r > game.config.width) { // right wall
+            mgd.pucks[i].x = (game.config.width - mgd.pucks[i].r) * 2 - mgd.pucks[i].x;
+            mgd.pucks[i].a = - mgd.pucks[i].a;
+            c = true;
+        }
+
+        if (mgd.pucks[i].y < mgd.pucks[i].r) { // upper wall
+            mgd.pucks[i].y = mgd.pucks[i].r * 2 - mgd.pucks[i].y;
+            mgd.pucks[i].a = mgd.pucks[i].a > 0 ? Math.PI - mgd.pucks[i].a : - mgd.pucks[i].a - Math.PI;
+            c = true;
+        } else if (mgd.pucks[i].y + mgd.pucks[i].r > game.config.height) { // lower wall
+            mgd.pucks[i].y = (game.config.height - mgd.pucks[i].r) * 2 - mgd.pucks[i].y;
+            mgd.pucks[i].a = mgd.pucks[i].a > 0 ? Math.PI - mgd.pucks[i].a : - mgd.pucks[i].a - Math.PI;
+            c = true;
+        }
+        return c;
+    }
+
+    function checkCollision_pucks(p) {
+        var lA = Math.sin(mgd.pucks[p].a + Math.PI / 2);
+        var lB = 0 - Math.cos(mgd.pucks[p].a + Math.PI / 2);
+        var lC = 0 - mgd.pucks[p].y * lB - mgd.pucks[p].x * lA;
+
+        var lcc;
+        var mult;
+        var xt;
+        var yt;
+
+        for (var i = 0; i < mgd.pucks.length; i++) {
+            if (i == p) { continue }
+            if (getDistance_diff(mgd.pucks[i], mgd.pucks[p]) > 0) { continue } // the distance is too high, bailing out
+
+            // get hit point and BOUNCE
+            // puck [i] is still, puck [p] is running into it
+            // the whole idea is to find a point for center of [p] when it touches and then bounces [i]
+            // speaking math it is an intersection point of course line of [p] and a circle with the same center as [i] and a radius equal to sum of [p] and [i]
+            lcc = lA * mgd.pucks[i].x + lB * mgd.pucks[i].y + lC;
+            mult = (mgd.pucks[i].r + mgd.pucks[p].r) * (mgd.pucks[i].r + mgd.pucks[p].r) - lcc * lcc;
+            if (mult < 0) { continue } // no intersection points, bailing out
+
+            mult = Math.sqrt(mult);
+            xt = mgd.pucks[i].x - lA * lcc;
+            yt = mgd.pucks[i].y - lB * lcc;
+
+            // got 2 intersection points, find the nearest one to p1 and change angle according to bounce
+            if (lB < 0 ? mgd.pucks[p].x > xt - lB * mult : mgd.pucks[p].x <= xt - lB * mult) {
+                mgd.pucks[p].a = -mgd.pucks[p].a + 2 * Math.atan2(yt - lA * mult - mgd.pucks[i].y, xt + lB * mult - mgd.pucks[i].x);  //, xt - lB, yt + lA];
+            } else {
+                mgd.pucks[p].a = -mgd.pucks[p].a + 2 * Math.atan2(yt + lA * mult - mgd.pucks[i].y, xt - lB * mult - mgd.pucks[i].x);  //, xt + lB, yt - lA];
+            }
+
+            if (mgd.pucks[p].a > 2 * Math.PI) { mgd.pucks[p].a -= 2 * Math.PI }
+            if (mgd.pucks[p].a < - 2 * Math.PI) { mgd.pucks[p].a += 2 * Math.PI }
+
+            return i;
+        }
+        return -1;
+    }
+
+
+    function getDistance(p1, p2) {
+        return Math.sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y));
+    }
+
+    function getDistance_diff(p1, p2) {
+        return (p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y) - (p1.r + p2.r) * (p1.r + p2.r);
+    }
+
+    function setGrowSize(p) {
+        // p is a puck id to grow
+        // %%% constants game.config.* to be moved to game walls config
+
+        var s = []; // array to collect all distances
+
+        // add distances to walls
+        s.push(mgd.pucks[p].x, mgd.pucks[p].y, game.config.width - mgd.pucks[p].x, game.config.height - mgd.pucks[p].y);
+
+        // add distances to pucks
+        for (var i = 0; i < mgd.pucks.length; i++) {
+            if (i == p) { continue }
+            s.push(getDistance(mgd.pucks[p], mgd.pucks[i]) - mgd.pucks[i].r);
+        }
+
+        // min value in array would be the size to grow
+        mgd.pucks[p].growTo = Math.min.apply(null, s) - 1;
+        mgd.pucks[p].growSpeed = (mgd.pucks[p].growTo - mgd.pucks[p].r) / 10 + 0.05; // %%% 10 is a const for growth speed
+        mgd.pucks[p].growTo--;
+        if (mgd.pucks[p].growSpeed < 1 ) { mgd.pucks[p].growSpeed = 1; }
+    }
+
+    //////////////////////////////////////////////////////////////////////
+    // drawing stuff
+
+    function drawStuff() {
+        mgd.th.graphics.clear();
+
+        // draw pucks
+        for (var i = 0; i < mgd.pucks.length; i++) {
+            mgd.th.graphics.lineStyle(2, mgd.pucks[i].h == -10 ? 0x7F7F7F : gameOptions.puckhealth[mgd.pucks[i].h]);
+            mgd.th.graphics.strokeCircle(mgd.pucks[i].x, mgd.pucks[i].y, mgd.pucks[i].r);
+            //mgd.th.graphics.lineStyle(2, 0x7F7F7F);
+            //mgd.th.graphics.strokeCircle(mgd.pucks[i].x, mgd.pucks[i].y, 2);
+            /*if (mgd.pucks[i].collp) {
+                mgd.th.graphics.lineStyle(2, 0x0000FF);
+                mgd.th.graphics.strokeCircle(mgd.pucks[i].collp[0], mgd.pucks[i].collp[1], 2);
+                mgd.th.graphics.lineStyle(2, 0x7F0000);
+                mgd.th.graphics.strokeCircle(mgd.pucks[i].collp[2], mgd.pucks[i].collp[3], 2);
+            }*/
+        }
+
+        if (mgd.tween_fade.isPlaying()) {
+            mgd.circle.setTo(mgd.circle.x, mgd.circle.y, mgd.tween_wave.getValue());
+            Phaser.Actions.PlaceOnCircle(mgd.puffs.getChildren(), mgd.circle);
+            Phaser.Actions.SetAlpha(mgd.puffs.getChildren(), mgd.tween_fade.getValue());
+        }
+        
+        /*
+        // draw test line
+        mgd.th.graphics.lineStyle(1, 0xFFFF00);
+        mgd.th.graphics.beginPath();
+        //mgd.th.graphics.moveTo(mgd.line.x, mgd.line.y);
+        mgd.th.graphics.moveTo(mgd.line.x - config.width * Math.sin(0 - Math.PI / 2 - mgd.line.a), mgd.line.y - config.width * Math.cos(0 - Math.PI / 2 - mgd.line.a));
+        //mgd.th.graphics.lineTo(mgd.line.x-100, mgd.line.y-100);
+        mgd.th.graphics.lineTo(mgd.line.x + config.width * Math.sin(0 - Math.PI / 2 - mgd.line.a), mgd.line.y + config.width * Math.cos(0 - Math.PI / 2 - mgd.line.a));
+        mgd.th.graphics.strokePath();
+        mgd.th.graphics.lineStyle(1, 0xFFFF00);
+        mgd.th.graphics.strokeCircle(mgd.line.x, mgd.line.y, 2);
+
+        // draw test intersections
+        var lA = Math.sin(mgd.line.a);
+        var lB = 0 - Math.cos(mgd.line.a);
+        var lC = 0 - mgd.line.y * lB - mgd.line.x * lA;
+        var xt = 0;
+        var yt = 0;
+        var lcc = 0;
+        var mult = 0;
+
+
+        for (i = 0; i < mgd.pucks.length; i++) {
+            lcc = lA * mgd.pucks[i].x + lB * mgd.pucks[i].y + lC;
+            mult = mgd.pucks[i].r * mgd.pucks[i].r - lcc * lcc;
+
+            if (mult < 0) { continue; }
+
+            mult = Math.sqrt(mult);
+            xt = mgd.pucks[i].x - lA * lcc;
+            yt = mgd.pucks[i].y - lB * lcc;
+            //logg("line intersect: " + i + ", x: " + xt + ", y: " + yt + " | m: " + mult);
+
+            mgd.th.graphics.strokeCircle(xt, yt, 2);
+
+            if (lB * mult > 0 ? mgd.line.x > xt - lB * mult : mgd.line.x <= xt - lB * mult) {
+                mgd.th.graphics.lineStyle(2, 0xFFFF00);
+                mgd.th.graphics.strokeCircle(xt + lB * mult, yt - lA * mult, 6);
+                mgd.th.graphics.lineStyle(2, 0x00FF00);
+                mgd.th.graphics.strokeCircle(xt - lB * mult, yt + lA * mult, 3);
+            } else {
+                mgd.th.graphics.lineStyle(2, 0xFFFF00);
+                mgd.th.graphics.strokeCircle(xt + lB * mult, yt - lA * mult, 3);
+                mgd.th.graphics.lineStyle(2, 0x00FF00);
+                mgd.th.graphics.strokeCircle(xt - lB * mult, yt + lA * mult, 6);
+            }
+        }
+        */
+    }
+
+    function logg(t) {
+        mgd.logt.push(t); //this.sys.game.loop.delta.toString());
+        if (mgd.logt.length > 10) { mgd.logt.shift(); }
+        // mgd.logg.setText('time: ' + this.sys.game.loop.time.toString());
+        mgd.logg.setText(mgd.logt);
+    }
+
+    </script>
+</body>
+</html>

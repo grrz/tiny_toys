@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.15.1/dist/phaser-arcade-physics.min.js"></script>
+    <!-- script src="phaser.min.js"></script -->
+</head>
+<body>
+    <script>
+    var config = {
+        type: Phaser.AUTO,
+        width: 1400,
+        height: 700,
+        keyboard: true,
+        scene: { preload: preload, create: create, update: update }
+    };
+    var game;
+
+    var gameOptions = {
+        ndots: 100, // number of dots
+        dot_x: 50, // config.width / 2,
+        dot_y: config.height / 2,
+        goal: {
+            x: config.width - 50,
+            y: config.height / 2,
+            size: 50
+        },
+
+        dot_color: [
+            0xFFFF00, // alive
+            0x7F7F7F, // dead
+            0xFFFFFF  // finished
+        ],
+
+        ndotins: 1000, // number of dot instructions
+        speed_limit: 5,
+        wild_mutation_rate: 0.01,
+        cross_mutation_rate_n: 0.1,
+        cross_mutation_rate_k: 0.2,
+    }
+
+    var dots = []; // should be an array of dots of size gameOptions.ndots
+
+    var obstacles = [
+        // x1, y1, w, h
+        [300,   0, 10, 300],
+        [500, 400, 10, 300],
+        [900,   0, 50, 50],
+        [900, 100, 50, 50],
+        [900, 200, 50, 50],
+        [900, 300, 50, 50],
+        [900, 400, 50, 50],
+        [900, 500, 50, 50],
+        [900, 600, 50, 50],
+    ];
+
+    var mgd = {
+        th: undefined, // phaser object %%% ugly code
+
+        generation: 0, // evolution step
+        state: "run", // autorun from start
+        autorun: true,
+
+        logg: undefined, // log component
+        logt: [] // log array
+    };
+
+    window.onload = function() {
+        game = new Phaser.Game(config);
+
+        window.focus()
+    }
+
+    function preload() {
+        mgd.th = this; // %%% ugly
+    }
+
+    function create() {
+        this.graphics = this.add.graphics();
+        mgd.logg = this.add.text(0, 0, "", {
+            fontFamily: "Arial",
+            color: "#ffffff",
+            fontSize: 10
+        });
+
+        this.input.keyboard.on("keydown", function(pointer) {
+            processkey(pointer);
+        }, this);
+
+        // create dots
+        for (var i = 0; i < gameOptions.ndots; i++) {
+            dots.push({
+                x: gameOptions.dot_x,
+                y: gameOptions.dot_y,
+                xa: 0, // velocity vector x
+                ya: 0, // velocity vector y
+                ins: newVector_dotset(gameOptions.ndotins), // instructions
+                step: 0,
+                state: 0, // 0 = alive, 1 = dead, 2 = finished
+                fitness: 0, // fitness to goal
+                l: false // ancestor from a leader
+            });
+        }
+
+        for (i = 0; i < obstacles.length; i++) {
+            obstacles[i][4] = obstacles[i][0] + obstacles[i][2]; // x2
+            obstacles[i][5] = obstacles[i][1] + obstacles[i][3]; // y2
+        }
+
+        drawStuff();
+    }
+
+    function processkey(key) {
+//        logg("key: " + key.code);
+        if (key.code == "Space") {
+            mgd.autorun = !mgd.autorun;
+            if (mgd.state == "" && mgd.autorun) { mgd.state = "run" }
+        }
+    }
+    
+    // all physics logic here
+    function update(dt) {
+        switch (mgd.state) {
+            case "": // do nothing
+            break;
+
+            case "run":
+                
+                var allfinished = true;
+
+                for (var i = 0; i < dots.length; i++) {
+                    if (dots[i].state != 0) { continue }
+                    
+                    // die if all steps are followed
+                    if (dots[i].step >= dots[i].ins.length) { dots[i].state = 1; continue }
+                    
+                    dots[i].xa += dots[i].ins[dots[i].step][0];
+                    if (dots[i].xa > gameOptions.speed_limit) { dots[i].xa = gameOptions.speed_limit}
+                    if (dots[i].xa < -gameOptions.speed_limit) { dots[i].xa = -gameOptions.speed_limit}
+                    dots[i].ya += dots[i].ins[dots[i].step][1];
+                    if (dots[i].ya > gameOptions.speed_limit) { dots[i].ya = gameOptions.speed_limit}
+                    if (dots[i].ya < -gameOptions.speed_limit) { dots[i].ya = -gameOptions.speed_limit}
+                    dots[i].x += dots[i].xa;
+                    dots[i].y += dots[i].ya;
+
+                    dots[i].step++;
+                    
+                    // die on walls collision
+                    if (dots[i].x < gameOptions.speed_limit || dots[i].x > config.width - gameOptions.speed_limit || dots[i].y < gameOptions.speed_limit || dots[i].y > config.height - gameOptions.speed_limit) { dots[i].state = 1; continue }
+
+                    // die on obstacles collision
+                    if (obstacleHit(dots[i])) { dots[i].state = 1; continue }
+
+                    // finish on goal collision
+                    if (getDistance(dots[i], gameOptions.goal) < gameOptions.goal.size) { dots[i].state = 2; continue } // finished
+
+                    allfinished = false;
+                }
+
+                drawStuff();
+
+                if (allfinished) { mgd.state = "evo" }
+
+                if (!mgd.autorun) { mgd.state = "" }
+            break;
+
+            case "evo":
+                // all dots are finished, spawn a new generation
+                mgd.state = ""; // prevent this part from run in parallel
+                var n_finished = 0;
+
+                var total_fitness = 0;
+                var ii;
+                var k;
+                var cmr;
+                var leader = -1;
+
+                for (var i = 0; i < gameOptions.ndots; i++) {
+                    if (dots[i].state == 2) {
+                        n_finished++;
+                        if (leader >= 0) {
+                            if (dots[i].step < dots[leader].step) { leader = i }
+                        } else { leader = i }
+                    }
+                    dots[i].fitness = dots[i].state == 2 ? (dots[i].l ? 2 : 1) * 100 / (dots[i].step * dots[i].step) : 1 / getDistance_sq(dots[i], gameOptions.goal);
+                    total_fitness += dots[i].fitness;
+                }
+
+                logg("generation: " + mgd.generation + ", finished: " + n_finished);
+
+                var newDots = new Array(gameOptions.ndots);
+                for (i = 0; i < gameOptions.ndots; i++) {
+                    k = getDot_byfit(total_fitness);
+                    newDots[i] = {
+                        x: gameOptions.dot_x,
+                        y: gameOptions.dot_y,
+                        xa: 0, // velocity vector x
+                        ya: 0, // velocity vector y
+                        ins: dots[k].ins.slice(0),
+                        step: 0,
+                        state: 0, // 0 = alive, 1 = dead, 2 = finished
+                        l: k == leader // ancestor from a leader
+                    };
+
+                    //// cross-mutation
+                    // find a pair to mutate
+                    ii = getDot_byfit(total_fitness);
+
+                    //// wild mutation
+                    for (k = 0; k < newDots[i].ins.length; k++) {
+                        if (Math.random() < gameOptions.wild_mutation_rate) {
+                            newDots[i].ins[k] = newVector_rand();
+                        }
+                    }
+                    
+                    if (i == ii) { continue }
+                    for (k = 0; k < newDots[i].ins.length; k++) {
+                        if (Math.random() < gameOptions.cross_mutation_rate_n) {
+                            cmr = Math.random() * gameOptions.cross_mutation_rate_k;
+                            newDots[i].ins[k][0] = (newDots[i].ins[k][0] + dots[ii].ins[k][0] * cmr) / (1 + cmr);
+                            newDots[i].ins[k][1] = (newDots[i].ins[k][1] + dots[ii].ins[k][1] * cmr) / (1 + cmr);
+                        }
+                    }
+
+                }
+                dots = newDots;
+
+                mgd.generation++;
+
+                mgd.state = mgd.autorun ? "run" : "";
+            break;
+        }
+
+    }
+
+    function getDot_byfit(totalf) {
+        var f = 0;
+        var targetf = Math.random() * totalf;
+
+        for (var i = 0; i < dots.length; i++) {
+            f += dots[i].fitness;
+
+            if (f > targetf) { return i }
+        }
+
+        // never raching point causes an exception
+        logg("doh");
+        return -1;
+    }
+
+    function obstacleHit(p) {
+        for (var i = 0; i < obstacles.length; i++) {
+            if (p.x >= obstacles[i][0] && p.x <= obstacles[i][4] && p.y >= obstacles[i][1] && p.y <= obstacles[i][5]) { return true }
+        }
+
+        return false;
+    }
+    
+
+    function newVector_rand() {
+        var a = Math.random() * 2 * Math.PI;
+
+        return [Math.sin(a), Math.cos(a)];
+    }
+
+    function newVector_dotset(n) {
+        var ins = [];
+
+        for (var i = 0; i < n; i++) {
+            ins.push(newVector_rand());
+        }
+
+        return ins;
+    }
+
+    function getDistance(p1, p2) {
+        return Math.sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y));
+    }
+
+    function getDistance_sq(p1, p2) {
+        return (p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y);
+    }
+
+    //////////////////////////////////////////////////////////////////////
+    // drawing stuff
+
+    function drawStuff() {
+        mgd.th.graphics.clear();
+
+        // graw goal
+        mgd.th.graphics.lineStyle(3, 0x00FF00);
+        mgd.th.graphics.strokeCircle(gameOptions.goal.x, gameOptions.goal.y, gameOptions.goal.size);
+
+        // draw obstacles
+        mgd.th.graphics.lineStyle(1, 0x0000FF);
+        for (var i = 0; i < obstacles.length; i++) {
+            mgd.th.graphics.strokeRect(obstacles[i][0], obstacles[i][1], obstacles[i][2], obstacles[i][3]);
+        }
+
+        // draw dots
+        for (i = 0; i < dots.length; i++) {
+            mgd.th.graphics.lineStyle(dots[i].l ? 4 : 2, gameOptions.dot_color[dots[i].state]);
+            mgd.th.graphics.strokeCircle(dots[i].x, dots[i].y, 4);
+        }
+//        logg(dots.length)
+    }
+
+    function logg(t) {
+        mgd.logt.push(t); //this.sys.game.loop.delta.toString());
+        if (mgd.logt.length > 10) { mgd.logt.shift(); }
+        // mgd.logg.setText('time: ' + this.sys.game.loop.time.toString());
+        mgd.logg.setText(mgd.logt);
+    }
+
+    </script>
+</body>
+</html>
